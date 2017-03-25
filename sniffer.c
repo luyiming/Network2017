@@ -1,266 +1,184 @@
-#include <arpa/inet.h>  //inet_addr , inet_ntoa , ntohs etc
-#include <linux/if_ether.h>
-#include <netinet/in.h>  // ntohs ...
-#include <stdio.h>
-#include <string.h>
-#include <sys/socket.h>
-#include <sys/types.h>
-#include <unistd.h>
-#include "type.h"
+#include <arpa/inet.h>       // inet_addr, inet_ntoa, ntohs etc
+#include <linux/if_ether.h>  // ETH_P_ALL
+#include <netinet/in.h>      // ntohs(), htonl()...
+#include <stdio.h>           // printf()
+#include <string.h>          // strlen(), strtok()
+#include <sys/socket.h>      // socket()
+#include <unistd.h>          // getpid()
+#include "dns.h"             // dns data type && functions
+#include "type.h"            // data strcuture definition
+#include "util.h"            // utilities
 
 #define BUFFER_MAX 2048
 
-void unpack_http_packet(unsigned char *buf) {}
+extern void unpack_dns_packet(unsigned char *buf);
 
-unsigned char *readDNSName(unsigned char *reader, unsigned char *buffer,
-                           int *count) {
-    unsigned char *name;
-    unsigned int p = 0, jumped = 0, offset;
-    int i, j;
+void unpack_http_packet(unsigned char *buf);
+void unpack_tcp_packet(unsigned char *buf);
+void unpack_udp_packet(unsigned char *buf);
+void unpack_icmp_packet(unsigned char *buf);
+void unpack_ip_packet(struct IPPack *packet);
+void unpack_arp_packet(struct EthArpPack *packet_arp);
+void unpack_eth_packet(unsigned char *buf);
 
-    *count = 1;
-    name = (unsigned char *)malloc(256);
+int filter_packet(unsigned char *buf);
 
-    name[0] = '\0';
+struct globalArgs_t {
+    int b_tcp;
+    int b_udp;
+    int b_dns;
+    int b_http;
+    int b_arp;
+    int b_icmp;
+    int b_all;
+    unsigned int count;
+} globalArgs;
+static const char *optString = "c:t:a";
+void parse_opt(int argc, char **argv);
 
-    // read the names in 3www6google3com format
-    while (*reader != 0) {
-        if (*reader >= 192) {
-            offset = (*reader) * 256 + *(reader + 1) -
-                     49152;  // 49152 = 11000000 00000000 ;)
-            reader = buffer + offset - 1;
-            jumped = 1;
-        } else {
-            name[p++] = *reader;
-        }
+/**
+ * input options:
+ * -a : sniff all packets
+ * -c [count] : Exit after receiving count packets.
+ * -t [tcp/udp/icmp/arp/dns/http] : sniff specified type of packets
+ */
+int main(int argc, char *argv[]) {
+    parse_opt(argc, argv);
 
-        reader = reader + 1;
-
-        if (jumped == 0) {
-            *count = *count + 1;  // if we havent jumped to another location
-                                  // then we can count up
-        }
+    int packets_count = 0;
+    int sock_fd;
+    int n_read;
+    unsigned char buffer[BUFFER_MAX];
+    if ((sock_fd = socket(PF_PACKET, SOCK_RAW, htons(ETH_P_ALL))) < 0) {
+        printf("error create raw socket\n");
+        return -1;
     }
-
-    name[p] = '\0';
-    if (jumped == 1) {
-        *count = *count + 1;
-    }
-
-    // convert 3www6google3com0 to www.google.com
-    for (i = 0; i < (int)strlen((const char *)name); i++) {
-        p = name[i];
-        for (j = 0; j < (int)p; j++) {
-            name[i] = name[i + 1];
-            i = i + 1;
+    while (1) {
+        // memset(buffer,0,BUFFER_MAX);
+        n_read = recvfrom(sock_fd, buffer, 2048, 0, NULL, NULL);
+        if (n_read < 42) {
+            printf("error when recv msg \n");
+            return -1;
         }
-        name[i] = '.';
+        if (filter_packet(buffer) && packets_count < globalArgs.count) {
+            printf("--------------------------------------------------------> packets count #%d\n",
+                   packets_count);
+            unpack_eth_packet(buffer);
+            packets_count++;
+        }
+        if (packets_count == globalArgs.count) return 0;
     }
-    name[i - 1] = '\0';  // remove the last dot
-    return name;
+    return 0;
 }
 
-void unpack_dns_packet(unsigned char *buf) {
-    PRINT_Light_Red(" DNS Header:\n");
-
-    unsigned char *reader;
-    int i, j;
-
-    struct DNS_HEADER *dns = NULL;
-
-    dns = (struct DNS_HEADER *)buf;
-
-    printf("Questions\t: %d\n", ntohs(dns->q_count));
-    printf("Answer PRs\t: %d\n", ntohs(dns->ans_count));
-    printf("Authority PRs\t: %d\n", ntohs(dns->auth_count));
-    printf("Additional RPs\t: %d\n", ntohs(dns->add_count));
-
-    printf("Queries\t\t: %d\n", ntohs(dns->q_count));
-    // start reading questions
-    unsigned char *p = buf + sizeof(struct DNS_HEADER);
-    if (ntohs(dns->q_count) > 1) return;
-
-    // convert 3www6google3com0 to www.google.com
-    char *qname = malloc(sizeof(char) * 256);
-    i = 0;
-    int cnt = *p++;
-    while (cnt > 0) {
-        qname[i++] = *p++;
-        cnt--;
-        if (cnt == 0) {
-            cnt = *p++;
-            qname[i++] = '.';
+/**
+ * parse command options
+ * @method parse_opt
+ * @param  argc      [main argc]
+ * @param  argv      [main argv]
+ */
+void parse_opt(int argc, char **argv) {
+    globalArgs.b_tcp = globalArgs.b_udp = globalArgs.b_dns = globalArgs.b_http =
+        globalArgs.b_arp = globalArgs.b_icmp = globalArgs.b_all = 0;
+    globalArgs.count = -1;
+    int opt = getopt(argc, argv, optString);
+    while (opt != -1) {
+        switch (opt) {
+            case 'c':
+                globalArgs.count = atoi(optarg);
+                break;
+            case 'a':
+                globalArgs.b_all = 1;
+                break;
+            case 't':
+                if (strcmp(optarg, "tcp") == 0) globalArgs.b_tcp = 1;
+                if (strcmp(optarg, "udp") == 0) globalArgs.b_udp = 1;
+                if (strcmp(optarg, "dns") == 0) globalArgs.b_dns = 1;
+                if (strcmp(optarg, "http") == 0) globalArgs.b_http = 1;
+                if (strcmp(optarg, "arp") == 0) globalArgs.b_arp = 1;
+                if (strcmp(optarg, "icmp") == 0) globalArgs.b_icmp = 1;
+                break;
+            default:
+                /* You won't actually get here. */
+                break;
         }
+        opt = getopt(argc, argv, optString);
     }
-    // remove last dot
-    qname[i - 1] = '\0';
-    if (*(p - 1) != 0) {
-        exit(1);
+}
+
+/**
+ * filter packets to be processed
+ * @method filter_packet
+ * @param  buf           [incomming packet]
+ * @return               [1 if to be processed, 0 if filtered]
+ */
+int filter_packet(unsigned char *buf) {
+    if (globalArgs.b_all == 1) {
+        return 1;
     }
-    printf(" -> %s: ", qname);
-
-    // p now point to type and class field
-    struct QUESTION *qinfo = (struct QUESTION *)p;
-    printf("type ");
-    switch (ntohs(qinfo->qtype)) {
-        case T_A:
-            printf("A");
-            break;  // Ipv4 address
-        case T_NS:
-            printf("NS");
-            break;  // Nameserver
-        case T_CNAME:
-            printf("CNAME");
-            break;  // canonical name
-        case T_SOA:
-            printf("SOA");
-            break; /* start of authority zone */
-        case T_PTR:
-            printf("PTR");
-            break; /* domain name pointer */
-        case T_MX:
-            printf("MX");
-            break;  // Mail server
-        case T_AAAA:
-            printf("AAAA");
-            break;  // IPv6 address
-        default:
-            printf("Unkown");
-            break;
-    }
-    printf("(%d), ", ntohs(qinfo->qtype));
-
-    printf("class ");
-    switch (ntohs(qinfo->qclass)) {
-        case 1:
-            printf("IN");
-            break;
-        default:
-            printf("Unkown");
-            break;
-    }
-    printf("(%d)\n", ntohs(qinfo->qclass));
-
-    if (ntohs(dns->ans_count) == 0) {
-        return;
-    }
-    // p now point to answer field
-    p = p + sizeof(struct QUESTION);
-
-    reader = p;
-    // Start reading answers
-    int stop = 0;
-    struct RES_RECORD answers[20], auth[20], addit[20];
-
-    for (i = 0; i < ntohs(dns->ans_count); i++) {
-        answers[i].name = readDNSName(reader, buf, &stop);
-        reader = reader + stop;
-
-        answers[i].resource = (struct R_DATA *)(reader);
-        reader = reader + sizeof(struct R_DATA);
-
-        if (ntohs(answers[i].resource->type) == 1)  // if its an ipv4 address
-        {
-            answers[i].rdata =
-                (unsigned char *)malloc(ntohs(answers[i].resource->data_len));
-
-            for (j = 0; j < ntohs(answers[i].resource->data_len); j++) {
-                answers[i].rdata[j] = reader[j];
+    struct EthPack *packet = (struct EthPack *)buf;
+    // IP
+    if (htons(packet->type) == 0x0800) {
+        struct IPPack *ippacket = &packet->ipPack;
+        if (ippacket->protocol == IPPROTO_ICMP) {
+            if (globalArgs.b_icmp == 1)
+                return 1;
+            else
+                return 0;
+        } else if (ippacket->protocol == IPPROTO_TCP) {
+            if (globalArgs.b_tcp == 1)
+                return 1;
+            else {
+                struct TCPPack *tcppacket = (struct TCPPack *)ippacket->payload;
+                // HTTP
+                if (ntohs(tcppacket->srcPort) == 80 ||
+                    ntohs(tcppacket->dstPort) == 80) {
+                    if (globalArgs.b_http == 1)
+                        return 1;
+                    else
+                        return 0;
+                } else
+                    return 0;
             }
-
-            answers[i].rdata[ntohs(answers[i].resource->data_len)] = '\0';
-
-            reader = reader + ntohs(answers[i].resource->data_len);
-        } else {
-            answers[i].rdata = readDNSName(reader, buf, &stop);
-            reader = reader + stop;
-        }
+        } else if (ippacket->protocol == IPPROTO_UDP) {
+            if (globalArgs.b_udp == 1)
+                return 1;
+            else {
+                struct UDPPack *udppacket = (struct UDPPack *)ippacket->payload;
+                // DNS
+                if (ntohs(udppacket->srcPort) == 53 ||
+                    ntohs(udppacket->dstPort) == 53) {
+                    if (globalArgs.b_dns == 1)
+                        return 1;
+                    else
+                        return 0;
+                } else
+                    return 0;
+            }
+        } else
+            return 0;
     }
-
-    // read authorities
-    for (i = 0; i < ntohs(dns->auth_count); i++) {
-        auth[i].name = readDNSName(reader, buf, &stop);
-        reader += stop;
-
-        auth[i].resource = (struct R_DATA *)(reader);
-        reader += sizeof(struct R_DATA);
-
-        auth[i].rdata = readDNSName(reader, buf, &stop);
-        reader += stop;
+    // ARP
+    if (htons(packet->type) == 0x0806) {
+        if (globalArgs.b_arp == 1)
+            return 1;
+        else
+            return 0;
     }
-
-    // read additional
-    for (i = 0; i < ntohs(dns->add_count); i++) {
-        addit[i].name = readDNSName(reader, buf, &stop);
-        reader += stop;
-
-        addit[i].resource = (struct R_DATA *)(reader);
-        reader += sizeof(struct R_DATA);
-
-        if (ntohs(addit[i].resource->type) == 1) {
-            addit[i].rdata =
-                (unsigned char *)malloc(ntohs(addit[i].resource->data_len));
-            for (j = 0; j < ntohs(addit[i].resource->data_len); j++)
-                addit[i].rdata[j] = reader[j];
-
-            addit[i].rdata[ntohs(addit[i].resource->data_len)] = '\0';
-            reader += ntohs(addit[i].resource->data_len);
-        } else {
-            addit[i].rdata = readDNSName(reader, buf, &stop);
-            reader += stop;
-        }
-    }
-
-    // print answers
-    struct sockaddr_in a;
-    printf("Answers : %d \n", ntohs(dns->ans_count));
-    for (i = 0; i < ntohs(dns->ans_count); i++) {
-        printf(" -> Name : %s ", answers[i].name);
-        if (ntohs(answers[i].resource->type) == T_A)  // IPv4 address
-        {
-            long *p;
-            p = (long *)answers[i].rdata;
-            a.sin_addr.s_addr = (*p);  // working without ntohl
-            printf("has IPv4 address : %s", inet_ntoa(a.sin_addr));
-        }
-        if (ntohs(answers[i].resource->type) == 5) {
-            // Canonical name for an alias
-            printf("has alias name : %s", answers[i].rdata);
-        }
-        printf("\n");
-    }
-
-    // print authorities
-    printf("Authoritive Records : %d \n", ntohs(dns->auth_count));
-    for (i = 0; i < ntohs(dns->auth_count); i++) {
-        printf("Name : %s ", auth[i].name);
-        if (ntohs(auth[i].resource->type) == 2) {
-            printf("has nameserver : %s", auth[i].rdata);
-        }
-        printf("\n");
-    }
-
-    // print additional resource records
-    printf("Additional Records : %d \n", ntohs(dns->add_count));
-    for (i = 0; i < ntohs(dns->add_count); i++) {
-        printf("Name : %s ", addit[i].name);
-        if (ntohs(addit[i].resource->type) == 1) {
-            long *p;
-            p = (long *)addit[i].rdata;
-            a.sin_addr.s_addr = (*p);
-            printf("has IPv4 address : %s", inet_ntoa(a.sin_addr));
-        }
-        printf("\n");
-    }
-
-    return;
+    return 0;
 }
+
+void unpack_http_packet(unsigned char *buf) {
+    PRINT_Light_Red(" HTTP Header:\n");
+}
+
 
 void unpack_tcp_packet(unsigned char *buf) {
     PRINT_Light_Green(" TCP Header:\n");
 
     struct TCPPack *packet = (struct TCPPack *)buf;
-    printf("Port\t\t: %d ==> %d\n", ntohs(packet->srcPort), ntohs(packet->dstPort));
+    printf("Port\t\t: %d ==> %d\n", ntohs(packet->srcPort),
+           ntohs(packet->dstPort));
 
     printf("Sequence number\t: %u\n", ntohl(packet->sequence));
     printf("Ack number\t: %d\n", ntohl(packet->ack));
@@ -282,13 +200,20 @@ void unpack_tcp_packet(unsigned char *buf) {
 
     printf("Checksum\t: 0x%04x\n", ntohs(packet->checksum));
     printf("Urgent pointer\t: %d\n", ntohs(packet->urgentPointer));
+
+    switch (ntohs(packet->dstPort)) {
+        case 80:
+            unpack_http_packet(&packet->payload);
+            break;
+    }
 }
 
 void unpack_udp_packet(unsigned char *buf) {
     PRINT_Light_Green(" UDP Header:\n");
 
     struct UDPPack *packet = (struct UDPPack *)buf;
-    printf("Port\t\t: %d ==> %d\n", ntohs(packet->srcPort), ntohs(packet->dstPort));
+    printf("Port\t\t: %d ==> %d\n", ntohs(packet->srcPort),
+           ntohs(packet->dstPort));
 
     printf("Length\t\t: %d\n", ntohs(packet->length));
 
@@ -517,6 +442,8 @@ void unpack_ip_packet(struct IPPack *packet) {
 }
 
 void unpack_arp_packet(struct EthArpPack *packet_arp) {
+    PRINT_Light_Cyan(" ARP Header:\n");
+
     if ((packet_arp->protocol[0] == 0x08) && (packet_arp->protocol[1] == 0x00))
         printf("ARP_IP\n");
     switch (packet_arp->opcode[1]) {
@@ -568,136 +495,4 @@ void unpack_eth_packet(unsigned char *buf) {
         printf("(ARP)\n");
         unpack_arp_packet((struct EthArpPack *)buf);
     }
-}
-
-struct globalArgs_t {
-    int b_tcp;
-    int b_udp;
-    int b_dns;
-    int b_http;
-    int b_arp;
-    int b_icmp;
-    int b_all;
-    unsigned int count;
-} globalArgs;
-
-static const char *optString = "c:t:a";
-
-/**
- * parse command options
- * @method parse_opt
- * @param  argc      [main argc]
- * @param  argv      [main argv]
- */
-void parse_opt(int argc, char **argv) {
-    globalArgs.b_tcp = globalArgs.b_udp = globalArgs.b_dns = globalArgs.b_http =
-        globalArgs.b_arp = globalArgs.b_icmp = globalArgs.b_all = 0;
-    globalArgs.count = -1;
-    int opt = getopt(argc, argv, optString);
-    while (opt != -1) {
-        switch (opt) {
-            case 'c':
-                globalArgs.count = atoi(optarg);
-                break;
-            case 'a':
-                globalArgs.b_all = 1;
-                break;
-            case 't':
-                if (strcmp(optarg, "tcp") == 0) globalArgs.b_tcp = 1;
-                if (strcmp(optarg, "udp") == 0) globalArgs.b_udp = 1;
-                if (strcmp(optarg, "dns") == 0) globalArgs.b_dns = 1;
-                if (strcmp(optarg, "http") == 0) globalArgs.b_http = 1;
-                if (strcmp(optarg, "arp") == 0) globalArgs.b_arp = 1;
-                if (strcmp(optarg, "icmp") == 0) globalArgs.b_icmp = 1;
-                break;
-            default:
-                /* You won't actually get here. */
-                break;
-        }
-        opt = getopt(argc, argv, optString);
-    }
-}
-
-int filter_packet(unsigned char *buf) {
-    if (globalArgs.b_all == 1) {
-        return 1;
-    }
-    struct EthPack *packet = (struct EthPack *)buf;
-    // IP
-    if (htons(packet->type) == 0x0800) {
-        struct IPPack *ippacket = &packet->ipPack;
-        if (ippacket->protocol == IPPROTO_ICMP) {
-            if (globalArgs.b_icmp == 1)
-                return 1;
-            else
-                return 0;
-        } else if (ippacket->protocol == IPPROTO_TCP) {
-            if (globalArgs.b_tcp == 1)
-                return 1;
-            else {
-                struct TCPPack *tcppacket = (struct TCPPack *)ippacket->payload;
-                // HTTP
-                if (ntohs(tcppacket->srcPort) == 80 ||
-                    ntohs(tcppacket->dstPort) == 80) {
-                    if (globalArgs.b_http == 1)
-                        return 1;
-                    else
-                        return 0;
-                } else
-                    return 0;
-            }
-        } else if (ippacket->protocol == IPPROTO_UDP) {
-            if (globalArgs.b_udp == 1)
-                return 1;
-            else {
-                struct UDPPack *udppacket = (struct UDPPack *)ippacket->payload;
-                // DNS
-                if (ntohs(udppacket->srcPort) == 53 ||
-                    ntohs(udppacket->dstPort) == 53) {
-                    if (globalArgs.b_dns == 1)
-                        return 1;
-                    else
-                        return 0;
-                } else
-                    return 0;
-            }
-        } else
-            return 0;
-    }
-    // ARP
-    if (htons(packet->type) == 0x0806) {
-        if (globalArgs.b_arp == 1)
-            return 1;
-        else
-            return 0;
-    }
-    return 0;
-}
-int main(int argc, char *argv[]) {
-    parse_opt(argc, argv);
-    int packets_count = 0;
-
-    int sock_fd;
-    int n_read;
-    unsigned char buffer[BUFFER_MAX];
-    if ((sock_fd = socket(PF_PACKET, SOCK_RAW, htons(ETH_P_ALL))) < 0) {
-        printf("error create raw socket\n");
-        return -1;
-    }
-    while (1) {
-        // memset(buffer,0,BUFFER_MAX);
-        n_read = recvfrom(sock_fd, buffer, 2048, 0, NULL, NULL);
-        if (n_read < 42) {
-            printf("error when recv msg \n");
-            return -1;
-        }
-        if (filter_packet(buffer) && packets_count < globalArgs.count) {
-            printf("-------------------------------------\n");
-            unpack_eth_packet(buffer);
-            packets_count++;
-        }
-        if (packets_count == globalArgs.count)
-            return 0;
-    }
-    return 0;
 }
