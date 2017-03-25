@@ -12,7 +12,8 @@
 
 void unpack_http_packet(unsigned char *buf) {}
 
-unsigned char *readDNSName(unsigned char *reader, unsigned char *buffer, int *count) {
+unsigned char *readDNSName(unsigned char *reader, unsigned char *buffer,
+                           int *count) {
     unsigned char *name;
     unsigned int p = 0, jumped = 0, offset;
     int i, j;
@@ -96,7 +97,7 @@ void unpack_dns_packet(unsigned char *buf) {
     if (*(p - 1) != 0) {
         exit(1);
     }
-    printf("  %s: ", qname);
+    printf(" -> %s: ", qname);
 
     // p now point to type and class field
     struct QUESTION *qinfo = (struct QUESTION *)p;
@@ -214,7 +215,7 @@ void unpack_dns_packet(unsigned char *buf) {
     struct sockaddr_in a;
     printf("Answers : %d \n", ntohs(dns->ans_count));
     for (i = 0; i < ntohs(dns->ans_count); i++) {
-        printf("  Name : %s ", answers[i].name);
+        printf(" -> Name : %s ", answers[i].name);
         if (ntohs(answers[i].resource->type) == T_A)  // IPv4 address
         {
             long *p;
@@ -259,8 +260,7 @@ void unpack_tcp_packet(unsigned char *buf) {
     PRINT_Light_Green(" TCP Header:\n");
 
     struct TCPPack *packet = (struct TCPPack *)buf;
-    printf("Source Port\t: %d\n", ntohs(packet->srcPort));
-    printf("Destination Port: %d\n", ntohs(packet->dstPort));
+    printf("Port\t\t: %d ==> %d\n", ntohs(packet->srcPort), ntohs(packet->dstPort));
 
     printf("Sequence number\t: %u\n", ntohl(packet->sequence));
     printf("Ack number\t: %d\n", ntohl(packet->ack));
@@ -288,8 +288,7 @@ void unpack_udp_packet(unsigned char *buf) {
     PRINT_Light_Green(" UDP Header:\n");
 
     struct UDPPack *packet = (struct UDPPack *)buf;
-    printf("Source Port\t: %d\n", ntohs(packet->srcPort));
-    printf("Destination Port: %d\n", ntohs(packet->dstPort));
+    printf("Port\t\t: %d ==> %d\n", ntohs(packet->srcPort), ntohs(packet->dstPort));
 
     printf("Length\t\t: %d\n", ntohs(packet->length));
 
@@ -308,11 +307,11 @@ void unpack_udp_packet(unsigned char *buf) {
 }
 
 void unpack_icmp_packet(unsigned char *buf) {
-    PRINT_Light_Cyan(" ICMP Header:\n");
+    PRINT_Light_Green(" ICMP Header:\n");
 
     struct ICMPPack *packet = (struct ICMPPack *)buf;
 
-    printf("Type\t: %d ", packet->type);
+    printf("Type\t\t: %d ", packet->type);
     switch (packet->type) {
         case ICMP_ECHOREPLY:
             printf("Echo (ping) Reply\n");
@@ -358,7 +357,7 @@ void unpack_icmp_packet(unsigned char *buf) {
             break;
     }
 
-    printf("Code\t: %d ", packet->code);
+    printf("Code\t\t: %d ", packet->code);
     if (packet->type == ICMP_DEST_UNREACH) {
         switch (packet->code) {
             case ICMP_NET_UNREACH:
@@ -451,19 +450,19 @@ void unpack_icmp_packet(unsigned char *buf) {
 
     int len = 56;
     if (packet->code == ICMP_ECHO || packet->code == ICMP_ECHOREPLY) {
-        printf("Identifier (BE)\t:%d (0x%04x)\n", ntohs(packet->un.echo.id),
+        printf("Identifier (BE)\t: %d (0x%04x)\n", ntohs(packet->un.echo.id),
                ntohs(packet->un.echo.id));
-        printf("Identifier (LE)\t:%d (0x%04x)\n", packet->un.echo.id,
+        printf("Identifier (LE)\t: %d (0x%04x)\n", packet->un.echo.id,
                packet->un.echo.id);
 
-        printf("Sequence Number (BE)\t:%d (0x%04x)\n",
+        printf("Seq Number (BE)\t: %d (0x%04x)\n",
                ntohs(packet->un.echo.sequence),
                ntohs(packet->un.echo.sequence));
-        printf("Sequence Number (LE)\t:%d (0x%04x)\n", packet->un.echo.sequence,
+        printf("Seq Number (LE)\t: %d (0x%04x)\n", packet->un.echo.sequence,
                packet->un.echo.sequence);
     }
 
-    printf("Data: (%d bytes)\n", len);
+    printf("Data\t\t: (%d bytes)\n", len);
     for (int i = 0; i < len; i++) {
         printf("0x%x ", packet->data[i]);
     }
@@ -571,7 +570,113 @@ void unpack_eth_packet(unsigned char *buf) {
     }
 }
 
+struct globalArgs_t {
+    int b_tcp;
+    int b_udp;
+    int b_dns;
+    int b_http;
+    int b_arp;
+    int b_icmp;
+    int b_all;
+    unsigned int count;
+} globalArgs;
+
+static const char *optString = "c:t:a";
+
+/**
+ * parse command options
+ * @method parse_opt
+ * @param  argc      [main argc]
+ * @param  argv      [main argv]
+ */
+void parse_opt(int argc, char **argv) {
+    globalArgs.b_tcp = globalArgs.b_udp = globalArgs.b_dns = globalArgs.b_http =
+        globalArgs.b_arp = globalArgs.b_icmp = globalArgs.b_all = 0;
+    globalArgs.count = -1;
+    int opt = getopt(argc, argv, optString);
+    while (opt != -1) {
+        switch (opt) {
+            case 'c':
+                globalArgs.count = atoi(optarg);
+                break;
+            case 'a':
+                globalArgs.b_all = 1;
+                break;
+            case 't':
+                if (strcmp(optarg, "tcp") == 0) globalArgs.b_tcp = 1;
+                if (strcmp(optarg, "udp") == 0) globalArgs.b_udp = 1;
+                if (strcmp(optarg, "dns") == 0) globalArgs.b_dns = 1;
+                if (strcmp(optarg, "http") == 0) globalArgs.b_http = 1;
+                if (strcmp(optarg, "arp") == 0) globalArgs.b_arp = 1;
+                if (strcmp(optarg, "icmp") == 0) globalArgs.b_icmp = 1;
+                break;
+            default:
+                /* You won't actually get here. */
+                break;
+        }
+        opt = getopt(argc, argv, optString);
+    }
+}
+
+int filter_packet(unsigned char *buf) {
+    if (globalArgs.b_all == 1) {
+        return 1;
+    }
+    struct EthPack *packet = (struct EthPack *)buf;
+    // IP
+    if (htons(packet->type) == 0x0800) {
+        struct IPPack *ippacket = &packet->ipPack;
+        if (ippacket->protocol == IPPROTO_ICMP) {
+            if (globalArgs.b_icmp == 1)
+                return 1;
+            else
+                return 0;
+        } else if (ippacket->protocol == IPPROTO_TCP) {
+            if (globalArgs.b_tcp == 1)
+                return 1;
+            else {
+                struct TCPPack *tcppacket = (struct TCPPack *)ippacket->payload;
+                // HTTP
+                if (ntohs(tcppacket->srcPort) == 80 ||
+                    ntohs(tcppacket->dstPort) == 80) {
+                    if (globalArgs.b_http == 1)
+                        return 1;
+                    else
+                        return 0;
+                } else
+                    return 0;
+            }
+        } else if (ippacket->protocol == IPPROTO_UDP) {
+            if (globalArgs.b_udp == 1)
+                return 1;
+            else {
+                struct UDPPack *udppacket = (struct UDPPack *)ippacket->payload;
+                // DNS
+                if (ntohs(udppacket->srcPort) == 53 ||
+                    ntohs(udppacket->dstPort) == 53) {
+                    if (globalArgs.b_dns == 1)
+                        return 1;
+                    else
+                        return 0;
+                } else
+                    return 0;
+            }
+        } else
+            return 0;
+    }
+    // ARP
+    if (htons(packet->type) == 0x0806) {
+        if (globalArgs.b_arp == 1)
+            return 1;
+        else
+            return 0;
+    }
+    return 0;
+}
 int main(int argc, char *argv[]) {
+    parse_opt(argc, argv);
+    int packets_count = 0;
+
     int sock_fd;
     int n_read;
     unsigned char buffer[BUFFER_MAX];
@@ -586,8 +691,13 @@ int main(int argc, char *argv[]) {
             printf("error when recv msg \n");
             return -1;
         }
-        printf("-------------------------------------\n");
-        unpack_eth_packet(buffer);
+        if (filter_packet(buffer) && packets_count < globalArgs.count) {
+            printf("-------------------------------------\n");
+            unpack_eth_packet(buffer);
+            packets_count++;
+        }
+        if (packets_count == globalArgs.count)
+            return 0;
     }
-    return -1;
+    return 0;
 }
