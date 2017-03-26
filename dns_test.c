@@ -11,7 +11,7 @@
 
 struct sockaddr_in a;
 int main(int argc, char *argv[]) {
-    unsigned char hostname[100];
+    char hostname[100];
 
     // Get the hostname from the terminal
     printf("Enter Hostname to Lookup : ");

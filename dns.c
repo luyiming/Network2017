@@ -218,7 +218,7 @@ void unpack_dns_packet(unsigned char *buf) {
  * @param  res_addr      [struct sockaddr_in data]
  * @return               [1 if succeed, -1 if fail]
  */
-int getHostByName(unsigned char *host, struct sockaddr_in *res_addr) {
+int getHostByName(char *host, struct sockaddr_in *res_addr) {
     // Get the DNS servers from the resolv.conf file
     get_dns_servers();
 
@@ -259,7 +259,7 @@ int getHostByName(unsigned char *host, struct sockaddr_in *res_addr) {
     // point to the query portion
     qname = (unsigned char *)&buf[sizeof(struct DNS_HEADER)];
 
-    toDnsNameFormat(qname, host);
+    toDnsNameFormat(qname, (unsigned char*)host);
     qinfo = (struct DNS_QUESTION *)&buf[sizeof(struct DNS_HEADER) +
                                         (strlen((const char *)qname) + 1)];
 
@@ -407,7 +407,7 @@ void get_dns_servers() {
             break;
         }
     }
-    printf("get dns server %s\n", dns_server);
+    // printf("get dns server %s\n", dns_server);
 }
 
 /**

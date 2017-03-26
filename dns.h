@@ -11,7 +11,7 @@
  * @param  res_addr      [struct sockaddr_in data]
  * @return               [1 if succeed, -1 if fail]
  */
-int getHostByName(unsigned char *host, struct sockaddr_in *res_addr);
+int getHostByName(char *host, struct sockaddr_in *res_addr);
 
 /**
  * unpack dns packet, print correspoing data
